@@ -61,15 +61,19 @@ int main()
 	printf("Waiting for a client to connect...\n");
 	client_addr_len = sizeof(client_addr);
 
-	int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t*)&client_addr_len);
-	if(client_fd < 0){
+	int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
+	if (client_fd < 0)
+	{
 		printf("Accept failed: %s \n", strerror(errno));
 		return 1;
 	}
 	printf("Client connected\n");
 	char buf[1024];
-	recv(client_fd, buf, sizeof(buf), 0);
-		send(client_fd, REDIS_PONG, sizeof(REDIS_PONG), 0);
+	int recv_bytes = recv(client_fd, buf, sizeof(buf), 0);
+
+	buf[recv_bytes] = '\0';
+	printf("%s", buf);
+	send(client_fd, REDIS_PONG, sizeof(REDIS_PONG), 0);
 
 	close(server_fd);
 
