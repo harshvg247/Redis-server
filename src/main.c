@@ -67,6 +67,7 @@ int main()
 	printf("Client connected\n");
 	char buf[5] = {0};
 	recv(client_fd, buf, sizeof(buf), 0);
+	printf("Received %s", buf);
 	if(strncmp(buf, "PING", 4) == 0){
 		send(client_fd, "+PONG\r\n", 8, 0);
 	}
