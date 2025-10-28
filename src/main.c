@@ -73,7 +73,7 @@ int main()
 
 	buf[recv_bytes] = '\0';
 	printf("%s", buf);
-	send(client_fd, REDIS_PONG, sizeof(REDIS_PONG), 0);
+	send(client_fd, REDIS_PONG, strlen(REDIS_PONG), 0);
 
 	close(server_fd);
 
