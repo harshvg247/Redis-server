@@ -7,6 +7,8 @@
 #include <errno.h>
 #include <unistd.h>
 
+#define REDIS_PONG "+PONG\r\n"
+
 int main()
 {
 	// Disable output buffering
@@ -65,9 +67,9 @@ int main()
 		return 1;
 	}
 	printf("Client connected\n");
-	char buf[5] = {0};
+	char buf[1024];
 	recv(client_fd, buf, sizeof(buf), 0);
-		send(client_fd, "+PONG\r\n", 8, 0);
+		send(client_fd, REDIS_PONG, sizeof(REDIS_PONG), 0);
 
 	close(server_fd);
 
