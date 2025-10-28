@@ -59,9 +59,17 @@ int main()
 	printf("Waiting for a client to connect...\n");
 	client_addr_len = sizeof(client_addr);
 
-	accept(server_fd, (struct sockaddr *)&client_addr, &client_addr_len);
+	int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t*)&client_addr_len);
+	if(client_fd < 0){
+		printf("Accept failed: %s \n", strerror(errno));
+		return 1;
+	}
 	printf("Client connected\n");
-
+	char buf[5] = {0};
+	recv(client_fd, buf, sizeof(buf), 0);
+	if(strncmp(buf, "PING", 4) == 0){
+		send(client_fd, "+PONG\r\n", 8, 0);
+	}
 	close(server_fd);
 
 	return 0;
