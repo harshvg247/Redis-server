@@ -68,12 +68,13 @@ int main()
 		return 1;
 	}
 	printf("Client connected\n");
-	char buf[1024];
-	int recv_bytes = recv(client_fd, buf, sizeof(buf), 0);
-
-	buf[recv_bytes] = '\0';
-	printf("%s", buf);
-	send(client_fd, REDIS_PONG, strlen(REDIS_PONG), 0);
+	while(1){
+		char buf[1024];
+		int recv_bytes = recv(client_fd, buf, sizeof(buf), 0);
+		buf[recv_bytes] = '\0';
+		printf("Received: %s", buf);
+		send(client_fd, REDIS_PONG, strlen(REDIS_PONG), 0);
+	}
 
 	close(server_fd);
 
