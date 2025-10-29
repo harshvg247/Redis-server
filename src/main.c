@@ -9,10 +9,37 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#define PORT 6379
-#define MAX_EVENTS 1000
-#define REDIS_PONG "+PONG\r\n"
+#define PORT 6379			   // Redis default port
+#define MAX_EVENTS 1000		   // Maximum simultaneous events epoll can handle
+#define REDIS_PONG "+PONG\r\n" // Redis protocol response for "PING"
+#define dbg 1
 
+
+int count_digits(int n) {
+    if (n == 0)
+        return 1;
+
+    int count = 0;
+    if (n < 0)
+        n = -n;  // ignore sign
+
+    while (n > 0) {
+        n /= 10;
+        count++;
+    }
+
+    return count;
+}
+void to_lowercase(char *str) {
+    for (int i = 0; str[i] != '\0'; i++) {
+        str[i] = tolower((unsigned char) str[i]);
+    }
+}
+/**
+ * Sets a socket file descriptor to non-blocking mode.
+ * Non-blocking sockets are essential for epoll to work efficiently,
+ * preventing the server from stalling on slow clients.
+ */
 int set_nonblocking(int fd)
 {
 	int flags = fcntl(fd, F_GETFL, 0);
@@ -30,17 +57,54 @@ int set_nonblocking(int fd)
 	return 0;
 }
 
+int extract_number(int* ind, const char* str){
+	int num = 0;
+	while(str[*ind]-'0' >=0 && str[*ind]-'0'<=9){
+		num = num*10 + (str[(*ind)++] - '0');
+	}
+	return num;
+}
+// ind at '$'
+char* extract_bulk_string(int *ind, const char* str){
+	if(dbg)printf("Extracting bulk string\n");
+	(*ind)++;
+	int bulk_str_size = extract_number(ind, str);
+	if(dbg)printf("bulk_str_size: %d\n", bulk_str_size);
+	(*ind)+=4;
+	char* bulk_str = (char*)malloc(bulk_str_size+1);
+	for(int i=0;i<bulk_str_size;i++){
+		bulk_str[i] = str[(*ind)++];
+	}
+	bulk_str[bulk_str_size] = '\0';
+	if(dbg)printf("Extracted string: %s\n", bulk_str);
+	return bulk_str;
+}
+char* encode_bulk_str(const char* str){
+	int num_digits_in_size_str = count_digits(sizeof(str)-1);
+	char* encoded_str = (char *)malloc(num_digits_in_size_str + sizeof(str) + 5);
+	sprintf(encoded_str, "$%d\r\n%s\r\n", (int)strlen(str), str);
+	return encoded_str;
+}
+
+int handle_echo(const char* str, int fd){
+	if(dbg)printf("Handling echo command\n");
+	char* encoded_str = encode_bulk_str(str);
+	send(fd, encoded_str, strlen(encoded_str), 0);
+	free(encoded_str);
+	return 1;
+}
+
 int main()
 {
-	// Disable output buffering
+	// Disable stdout and stderr buffering for immediate log visibility
 	setbuf(stdout, NULL);
 	setbuf(stderr, NULL);
 
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
 	printf("Logs from your program will appear here!\n");
 
 	int server_fd;
 
+	/** STEP 1: Create a TCP socket **/
 	server_fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (server_fd == -1)
 	{
@@ -48,8 +112,7 @@ int main()
 		return 1;
 	}
 
-	// Since the tester restarts your program quite often, setting SO_REUSEADDR
-	// ensures that we don't run into 'Address already in use' errors
+	/** STEP 2: Enable address reuse to prevent “Address already in use” errors **/
 	int reuse = 1;
 	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0)
 	{
@@ -57,6 +120,7 @@ int main()
 		return 1;
 	}
 
+	/** STEP 3: Bind socket to a port **/
 	struct sockaddr_in serv_addr = {
 		.sin_family = AF_INET,
 		.sin_port = htons(PORT),
@@ -69,28 +133,36 @@ int main()
 		return 1;
 	}
 
+	/** STEP 4: Start listening for incoming connections **/
 	int connection_backlog = 5;
 	if (listen(server_fd, connection_backlog) != 0)
 	{
 		printf("Listen failed: %s \n", strerror(errno));
 		return 1;
 	}
+
+	/** STEP 5: Make listening socket non-blocking **/
 	if (set_nonblocking(server_fd) == -1)
 	{
 		printf("set_nonblocking failed: %s\n", strerror(errno));
 		return 1;
 	}
+
 	printf("Waiting for a client to connect...\n");
 
+	/** STEP 6: Create an epoll instance **/
 	int epfd = epoll_create1(0);
 	if (epfd < 0)
 	{
 		perror("epoll_create1");
 		return 1;
 	}
+
+	/** STEP 7: Register the listening socket with epoll **/
 	struct epoll_event ev, events[MAX_EVENTS];
-	ev.events = EPOLLIN;
+	ev.events = EPOLLIN; // Interested in "readable" events
 	ev.data.fd = server_fd;
+
 	if (epoll_ctl(epfd, EPOLL_CTL_ADD, server_fd, &ev) < 0)
 	{
 		perror("epoll_ctl: listen_fd");
@@ -99,22 +171,25 @@ int main()
 
 	printf("Event loop started\n");
 
+	/** STEP 8: Main event loop **/
 	while (1)
 	{
+		// Wait indefinitely (-1) for events on registered file descriptors
 		int n = epoll_wait(epfd, events, MAX_EVENTS, -1);
 		if (n == -1)
 		{
 			if (errno == EINTR)
-			{
-				continue;
-			}
+				continue; // Interrupted by signal, just continue
 			perror("epoll_wait");
 			break;
 		}
 
+		/** STEP 9: Handle all triggered events **/
 		for (int i = 0; i < n; i++)
 		{
 			int fd = events[i].data.fd;
+
+			// Event on the listening socket — means new client connection
 			if (fd == server_fd)
 			{
 				struct sockaddr_in client_addr;
@@ -125,12 +200,17 @@ int main()
 					perror("accept");
 					continue;
 				}
+
 				printf("New client connected\n");
+
+				// Set new client socket to non-blocking
 				if (set_nonblocking(client_fd) < 0)
 				{
 					close(client_fd);
 					continue;
 				}
+
+				// Register client_fd to epoll to monitor for incoming data
 				ev.events = EPOLLIN;
 				ev.data.fd = client_fd;
 				if (epoll_ctl(epfd, EPOLL_CTL_ADD, client_fd, &ev) < 0)
@@ -140,20 +220,23 @@ int main()
 					continue;
 				}
 			}
+
+			// Event from a connected client
 			else if (events[i].events & EPOLLIN)
 			{
 				char buf[1024];
 				int bytes_read = recv(fd, buf, sizeof(buf) - 1, 0);
-
+				buf[bytes_read] = '\0';
 				if (bytes_read == 0)
 				{
-					// Client disconnected
+					/** Client disconnected gracefully **/
 					printf("Client (fd=%d) disconnected.\n", fd);
 					close(fd);
 					epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
 				}
 				else if (bytes_read < 0)
 				{
+					/** Read error (ignore EAGAIN/EWOULDBLOCK since it’s non-blocking) **/
 					if (errno != EAGAIN && errno != EWOULDBLOCK)
 					{
 						perror("recv");
@@ -163,14 +246,38 @@ int main()
 				}
 				else
 				{
-					buf[bytes_read] = '\0';
-					printf("Received from fd=%d: %s", fd, buf);
-
-					send(fd, REDIS_PONG, strlen(REDIS_PONG), 0);
+					/** Data received successfully **/
+					int ind = 0;
+					if(dbg) printf("buf: %s\n", buf);
+					if(buf[ind] == '*'){
+						ind++;
+						int cmnd_list_size = extract_number(&ind, buf);
+						char* cmnds[cmnd_list_size];
+						ind+=4;
+						for(int i=0;i<cmnd_list_size;i++){
+							cmnds[i] = extract_bulk_string(&ind, buf);
+							ind+=4;
+						}
+						to_lowercase(cmnds[0]);
+						for(int i=0;i<cmnd_list_size;i++){
+							printf("%s ", cmnds[i]);
+						}
+						printf("\n");
+						if(!strcmp(cmnds[0], "echo")){
+							handle_echo(cmnds[1], fd);
+						}
+						for(int i=0;i<cmnd_list_size;i++){
+							free(cmnds[i]);
+						}
+					}else if(strcmp(buf, "PING") == 0){
+						send(fd, REDIS_PONG, strlen(REDIS_PONG), 0);
+					}
 				}
 			}
 		}
 	}
+
+	/** Cleanup **/
 	close(epfd);
 	close(server_fd);
 
