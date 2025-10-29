@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <ctype.h>
 
 #define PORT 6379			   // Redis default port
 #define MAX_EVENTS 1000		   // Maximum simultaneous events epoll can handle
