@@ -71,7 +71,7 @@ char* extract_bulk_string(int *ind, const char* str){
 	(*ind)++;
 	int bulk_str_size = extract_number(ind, str);
 	if(dbg)printf("bulk_str_size: %d\n", bulk_str_size);
-	(*ind)+=4;
+	(*ind)+=2;
 	char* bulk_str = (char*)malloc(bulk_str_size+1);
 	for(int i=0;i<bulk_str_size;i++){
 		bulk_str[i] = str[(*ind)++];
@@ -254,10 +254,10 @@ int main()
 						ind++;
 						int cmnd_list_size = extract_number(&ind, buf);
 						char* cmnds[cmnd_list_size];
-						ind+=4;
+						ind+=2;
 						for(int i=0;i<cmnd_list_size;i++){
 							cmnds[i] = extract_bulk_string(&ind, buf);
-							ind+=4;
+							ind+=2;
 						}
 						to_lowercase(cmnds[0]);
 						for(int i=0;i<cmnd_list_size;i++){
