@@ -266,12 +266,12 @@ int main()
 						printf("\n");
 						if(!strcmp(cmnds[0], "echo")){
 							handle_echo(cmnds[1], fd);
+						}else if(!strcmp(cmnds[0], "ping")){
+							send(fd, REDIS_PONG, strlen(REDIS_PONG), 0);
 						}
 						for(int i=0;i<cmnd_list_size;i++){
 							free(cmnds[i]);
 						}
-					}else if(strcmp(buf, "PING") == 0){
-						send(fd, REDIS_PONG, strlen(REDIS_PONG), 0);
 					}
 				}
 			}
