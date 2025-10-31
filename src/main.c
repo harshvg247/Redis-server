@@ -11,6 +11,7 @@
 #include <ctype.h>
 #include "uthash.h"
 #include "utils.h"
+#include "time_utils.h"
 
 #define PORT 6379			   // Redis default port
 #define MAX_EVENTS 1000		   // Maximum simultaneous events epoll can handle
@@ -96,20 +97,25 @@ typedef struct db_entry
 {
 	char *key;
 	char *value;
+	long long expiry_ms;
 	UT_hash_handle hh;
 } db_entry;
 db_entry *db = NULL;
 
-void handle_set(char *key, char *value, int fd)
+void handle_set(char *key, char *value, long long expiry, int fd)
 {
+	if(dbg) printf("handle_set-> params recvd: %s %s %d %d\n", key, value, expiry, fd);
 	db_entry *e;
 	HASH_FIND_STR(db, key, e);
 	if (e == NULL)
 	{
 		e = (db_entry *)malloc(sizeof(db_entry));
 		e->key = strdup(key);
+	}else{
+		free(e->value);
 	}
 	e->value = strdup(value);
+	e->expiry_ms = expiry;
 	HASH_ADD_STR(db, key, e);
 	send(fd, REDIS_OK, strlen(REDIS_OK), 0);
 }
@@ -121,9 +127,18 @@ void handle_get(char *key, int fd)
 	if(e == NULL){
 		send(fd, NULL_BULK_STRING, strlen(NULL_BULK_STRING), 0);
 	}else{
-		char* response = encode_bulk_str(e->value);
-		send(fd, response, strlen(response), 0); 
-		free(response);
+		if(e->expiry_ms == 1 || e->expiry_ms >= current_time_ms()){
+			char* response = encode_bulk_str(e->value);
+			send(fd, response, strlen(response), 0); 
+			free(response);
+		}else{
+			if(dbg) printf("Key expired\n");
+			HASH_DEL(db, e);
+			free(e->key);
+			free(e->value);
+			free(e);
+			send(fd, NULL_BULK_STRING, strlen(NULL_BULK_STRING), 0);
+		}
 	}
 }
 
@@ -322,7 +337,14 @@ int main()
 						}
 						else if (!strcmp(cmnds[0], "set"))
 						{
-							handle_set(cmnds[1], cmnds[2], fd);
+							long long expiry = -1;
+							if(cmnd_list_size > 3){
+								to_lowercase(cmnds[3]);
+								if(!strcmp(cmnds[3], "px")){
+									expiry = current_time_ms() + atoi(cmnds[4]);
+								}
+							}
+							handle_set(cmnds[1], cmnds[2], expiry, fd);
 						}
 						else if (!strcmp(cmnds[0], "get")){
 							handle_get(cmnds[1], fd);
