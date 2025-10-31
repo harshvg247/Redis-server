@@ -9,33 +9,16 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <ctype.h>
+#include "uthash.h"
+#include "utils.h"
 
 #define PORT 6379			   // Redis default port
 #define MAX_EVENTS 1000		   // Maximum simultaneous events epoll can handle
 #define REDIS_PONG "+PONG\r\n" // Redis protocol response for "PING"
+#define REDIS_OK "+OK\r\n"
+#define NULL_BULK_STRING "$-1\r\n"
 #define dbg 1
 
-
-int count_digits(int n) {
-    if (n == 0)
-        return 1;
-
-    int count = 0;
-    if (n < 0)
-        n = -n;  // ignore sign
-
-    while (n > 0) {
-        n /= 10;
-        count++;
-    }
-
-    return count;
-}
-void to_lowercase(char *str) {
-    for (int i = 0; str[i] != '\0'; i++) {
-        str[i] = tolower((unsigned char) str[i]);
-    }
-}
 /**
  * Sets a socket file descriptor to non-blocking mode.
  * Non-blocking sockets are essential for epoll to work efficiently,
@@ -58,41 +41,90 @@ int set_nonblocking(int fd)
 	return 0;
 }
 
-int extract_number(int* ind, const char* str){
+int extract_number(int *ind, const char *str)
+{
 	int num = 0;
-	while(str[*ind]-'0' >=0 && str[*ind]-'0'<=9){
-		num = num*10 + (str[(*ind)++] - '0');
+	while (str[*ind] - '0' >= 0 && str[*ind] - '0' <= 9)
+	{
+		num = num * 10 + (str[(*ind)++] - '0');
 	}
 	return num;
 }
 // ind at '$'
-char* extract_bulk_string(int *ind, const char* str){
-	if(dbg)printf("Extracting bulk string\n");
+char *extract_bulk_string(int *ind, const char *str)
+{
+	if (dbg)
+		printf("Extracting bulk string\n");
 	(*ind)++;
 	int bulk_str_size = extract_number(ind, str);
-	if(dbg)printf("bulk_str_size: %d\n", bulk_str_size);
-	(*ind)+=2;
-	char* bulk_str = (char*)malloc(bulk_str_size+1);
-	for(int i=0;i<bulk_str_size;i++){
+	if (dbg)
+		printf("bulk_str_size: %d\n", bulk_str_size);
+	(*ind) += 2;
+	char *bulk_str = (char *)malloc(bulk_str_size + 1);
+	for (int i = 0; i < bulk_str_size; i++)
+	{
 		bulk_str[i] = str[(*ind)++];
 	}
 	bulk_str[bulk_str_size] = '\0';
-	if(dbg)printf("Extracted string: %s\n", bulk_str);
+	if (dbg)
+		printf("Extracted string: %s\n", bulk_str);
 	return bulk_str;
 }
-char* encode_bulk_str(const char* str){
-	int num_digits_in_size_str = count_digits(sizeof(str)-1);
-	char* encoded_str = (char *)malloc(num_digits_in_size_str + sizeof(str) + 5);
+char *encode_bulk_str(const char *str)
+{
+	int num_digits_in_size_str = count_digits(strlen(str));
+	char *encoded_str = (char *)malloc(num_digits_in_size_str + strlen(str) + 6);
+	if (encoded_str == NULL)
+	{
+		return NULL; // Handle allocation failure
+	}
 	sprintf(encoded_str, "$%d\r\n%s\r\n", (int)strlen(str), str);
 	return encoded_str;
 }
 
-int handle_echo(const char* str, int fd){
-	if(dbg)printf("Handling echo command\n");
-	char* encoded_str = encode_bulk_str(str);
+int handle_echo(const char *str, int fd)
+{
+	if (dbg)
+		printf("Handling echo command\n");
+	char *encoded_str = encode_bulk_str(str);
 	send(fd, encoded_str, strlen(encoded_str), 0);
 	free(encoded_str);
 	return 1;
+}
+
+typedef struct db_entry
+{
+	char *key;
+	char *value;
+	UT_hash_handle hh;
+} db_entry;
+db_entry *db = NULL;
+
+void handle_set(char *key, char *value, int fd)
+{
+	db_entry *e;
+	HASH_FIND_STR(db, key, e);
+	if (e == NULL)
+	{
+		e = (db_entry *)malloc(sizeof(db_entry));
+		e->key = strdup(key);
+	}
+	e->value = strdup(value);
+	HASH_ADD_STR(db, key, e);
+	send(fd, REDIS_OK, strlen(REDIS_OK), 0);
+}
+
+void handle_get(char *key, int fd)
+{
+	db_entry* e;
+	HASH_FIND_STR(db, key, e);
+	if(e == NULL){
+		send(fd, NULL_BULK_STRING, strlen(NULL_BULK_STRING), 0);
+	}else{
+		char* response = encode_bulk_str(e->value);
+		send(fd, response, strlen(response), 0); 
+		free(response);
+	}
 }
 
 int main()
@@ -113,6 +145,12 @@ int main()
 		return 1;
 	}
 
+	// 	Normally, when a TCP socket is closed, the port goes into a TIME_WAIT state for about 1–2 minutes.
+	// During this time, the OS keeps the port reserved to ensure:
+
+	// Any delayed packets from the old connection don’t interfere with new ones.
+
+	// Proper TCP shutdown is respected.
 	/** STEP 2: Enable address reuse to prevent “Address already in use” errors **/
 	int reuse = 1;
 	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0)
@@ -125,7 +163,7 @@ int main()
 	struct sockaddr_in serv_addr = {
 		.sin_family = AF_INET,
 		.sin_port = htons(PORT),
-		.sin_addr = {htonl(INADDR_ANY)},
+		.sin_addr = {htonl(INADDR_ANY)}, // Bind this socket to all my machine’s IPv4 addresses.
 	};
 
 	if (bind(server_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) != 0)
@@ -133,7 +171,7 @@ int main()
 		printf("Bind failed: %s \n", strerror(errno));
 		return 1;
 	}
-
+	// This specifies how many pending client connections the kernel should queue while your server hasn’t yet accepted them
 	/** STEP 4: Start listening for incoming connections **/
 	int connection_backlog = 5;
 	if (listen(server_fd, connection_backlog) != 0)
@@ -170,6 +208,8 @@ int main()
 		exit(EXIT_FAILURE);
 	}
 
+	// printf("Initialising database\n");
+
 	printf("Event loop started\n");
 
 	/** STEP 8: Main event loop **/
@@ -195,13 +235,15 @@ int main()
 			{
 				struct sockaddr_in client_addr;
 				socklen_t client_len = sizeof(client_addr);
+				// Accept a pending client connection.
+				// Creates a new socket (client_fd) dedicated to this client,
+				// while server_fd continues listening for others.
 				int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
 				if (client_fd < 0)
 				{
 					perror("accept");
 					continue;
 				}
-
 				printf("New client connected\n");
 
 				// Set new client socket to non-blocking
@@ -249,27 +291,44 @@ int main()
 				{
 					/** Data received successfully **/
 					int ind = 0;
-					if(dbg) printf("buf: %s\n", buf);
-					if(buf[ind] == '*'){
+					if (dbg)
+						printf("buf: %s\n", buf);
+					if (buf[ind] == '*')
+					{
 						ind++;
 						int cmnd_list_size = extract_number(&ind, buf);
-						char* cmnds[cmnd_list_size];
-						ind+=2;
-						for(int i=0;i<cmnd_list_size;i++){
+						if (dbg)
+							printf("cmnd_list_size: %d\n", cmnd_list_size);
+						char *cmnds[cmnd_list_size];
+						ind += 2;
+						for (int i = 0; i < cmnd_list_size; i++)
+						{
 							cmnds[i] = extract_bulk_string(&ind, buf);
-							ind+=2;
+							ind += 2;
 						}
 						to_lowercase(cmnds[0]);
-						for(int i=0;i<cmnd_list_size;i++){
+						for (int i = 0; i < cmnd_list_size; i++)
+						{
 							printf("%s ", cmnds[i]);
 						}
 						printf("\n");
-						if(!strcmp(cmnds[0], "echo")){
+						if (!strcmp(cmnds[0], "echo"))
+						{
 							handle_echo(cmnds[1], fd);
-						}else if(!strcmp(cmnds[0], "ping")){
+						}
+						else if (!strcmp(cmnds[0], "ping"))
+						{
 							send(fd, REDIS_PONG, strlen(REDIS_PONG), 0);
 						}
-						for(int i=0;i<cmnd_list_size;i++){
+						else if (!strcmp(cmnds[0], "set"))
+						{
+							handle_set(cmnds[1], cmnds[2], fd);
+						}
+						else if (!strcmp(cmnds[0], "get")){
+							handle_get(cmnds[1], fd);
+						}
+						for (int i = 0; i < cmnd_list_size; i++)
+						{
 							free(cmnds[i]);
 						}
 					}
