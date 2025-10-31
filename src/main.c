@@ -127,7 +127,7 @@ void handle_get(char *key, int fd)
 	if(e == NULL){
 		send(fd, NULL_BULK_STRING, strlen(NULL_BULK_STRING), 0);
 	}else{
-		if(e->expiry_ms == 1 || e->expiry_ms >= current_time_ms()){
+		if(e->expiry_ms == -1 || e->expiry_ms >= current_time_ms()){
 			char* response = encode_bulk_str(e->value);
 			send(fd, response, strlen(response), 0); 
 			free(response);
